@@ -5,7 +5,6 @@ import { CallbackManager } from "langchain/callbacks";
 import { NextResponse } from "next/server";
 
 import { MemoryManager } from "@/lib/memory";
-import { rateLimit } from "@/lib/rate-limit";
 import prismadb from "@/lib/prismadb";
 
 dotenv.config({ path: `.env` });
@@ -23,12 +22,7 @@ export async function POST(
     }
 
     const identifier = request.url + "-" + user.id;
-    const { success } = await rateLimit(identifier);
-
-    if (!success) {
-      return new NextResponse("Rate limit exceeded", { status: 429 });
-    }
-
+   
     const companion = await prismadb.companion.update({
       where: {
         id: params.chatId

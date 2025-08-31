@@ -1,8 +1,8 @@
-import { Redis } from "@upstash/redis";
 import { OpenAIEmbeddings } from "langchain/embeddings/openai";
 import { PineconeClient } from "@pinecone-database/pinecone";
 import { PineconeStore } from "langchain/vectorstores/pinecone";
 
+// Temporarily disable Redis functionality
 export type CompanionKey = {
   companionName: string;
   modelName: string;
@@ -11,44 +11,14 @@ export type CompanionKey = {
 
 export class MemoryManager {
   private static instance: MemoryManager;
-  private history: Redis;
-  private vectorDBClient: PineconeClient;
 
   public constructor() {
-    this.history = Redis.fromEnv();
-    this.vectorDBClient = new PineconeClient();
+    // Temporarily disabled Redis
+    console.log("Memory manager initialized without Redis");
   }
 
   public async init() {
-    if (this.vectorDBClient instanceof PineconeClient) {
-      await this.vectorDBClient.init({
-        apiKey: process.env.PINECONE_API_KEY!,
-        environment: process.env.PINECONE_ENVIRONMENT!,
-      });
-    }
-  }
-
-  public async vectorSearch(
-    recentChatHistory: string,
-    companionFileName: string
-  ) {
-    const pineconeClient = <PineconeClient>this.vectorDBClient;
-
-    const pineconeIndex = pineconeClient.Index(
-      process.env.PINECONE_INDEX! || ""
-    );
-
-    const vectorStore = await PineconeStore.fromExistingIndex(
-      new OpenAIEmbeddings({ openAIApiKey: process.env.OPENAI_API_KEY }),
-      { pineconeIndex }
-    ); 
-
-    const similarDocs = await vectorStore
-      .similaritySearch(recentChatHistory, 3, { fileName: companionFileName })
-      .catch((err) => {
-        console.log("WARNING: failed to get vector search results.", err);
-      });
-    return similarDocs;
+    console.log("Memory manager init - Redis disabled");
   }
 
   public static async getInstance(): Promise<MemoryManager> {
@@ -59,39 +29,14 @@ export class MemoryManager {
     return MemoryManager.instance;
   }
 
-  private generateRedisCompanionKey(companionKey: CompanionKey): string {
-    return `${companionKey.companionName}-${companionKey.modelName}-${companionKey.userId}`;
-  }
-
   public async writeToHistory(text: string, companionKey: CompanionKey) {
-    if (!companionKey || typeof companionKey.userId == "undefined") {
-      console.log("Companion key set incorrectly");
-      return "";
-    }
-
-    const key = this.generateRedisCompanionKey(companionKey);
-    const result = await this.history.zadd(key, {
-      score: Date.now(),
-      member: text,
-    });
-
-    return result;
+    console.log("writeToHistory disabled - Redis not available");
+    return "";
   }
 
   public async readLatestHistory(companionKey: CompanionKey): Promise<string> {
-    if (!companionKey || typeof companionKey.userId == "undefined") {
-      console.log("Companion key set incorrectly");
-      return "";
-    }
-
-    const key = this.generateRedisCompanionKey(companionKey);
-    let result = await this.history.zrange(key, 0, Date.now(), {
-      byScore: true,
-    });
-
-    result = result.slice(-30).reverse();
-    const recentChats = result.reverse().join("\n");
-    return recentChats;
+    console.log("readLatestHistory disabled - Redis not available");
+    return "";
   }
 
   public async seedChatHistory(
@@ -99,18 +44,16 @@ export class MemoryManager {
     delimiter: string = "\n",
     companionKey: CompanionKey
   ) {
-    const key = this.generateRedisCompanionKey(companionKey);
-    if (await this.history.exists(key)) {
-      console.log("User already has chat history");
-      return;
-    }
+    console.log("seedChatHistory disabled - Redis not available");
+    return;
+  }
 
-    const content = seedContent.split(delimiter);
-    let counter = 0;
-    for (const line of content) {
-      await this.history.zadd(key, { score: counter, member: line });
-      counter += 1;
-    }
+  public async vectorSearch(
+    recentChatHistory: string,
+    companionFileName: string
+  ) {
+    console.log("vectorSearch disabled - Vector DB not available");
+    return [];
   }
 }
 
