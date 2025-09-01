@@ -3,9 +3,8 @@ import { StreamingTextResponse, LangChainStream } from "ai";
 import { Replicate } from "langchain/llms/replicate";
 import { CallbackManager } from "langchain/callbacks";
 import { NextResponse } from "next/server";
-
-import { MemoryManager } from "@/lib/memory";
-import prismadb from "@/lib/prismadb";
+import ollama from "@/lib/ollama";
+import { supabase } from "@/lib/supabase-client";
 
 dotenv.config({ path: `.env` });
 
@@ -15,128 +14,117 @@ export async function POST(
 ) {
   try {
     const { prompt } = await request.json();
-    const user = "user";
+    const userId = "user"; // Replace with actual user ID from auth later
 
-    if (!user ) {
+    console.log("Chat request for companion:", params.chatId);
+    console.log("User prompt:", prompt);
+
+    if (!userId) {
       return new NextResponse("Unauthorized", { status: 401 });
     }
 
-    const identifier = request.url + "-" + user.id;
-   
-    const companion = await prismadb.companion.update({
-      where: {
-        id: params.chatId
-      },
-      data: {
-        messages: {
-          create: {
-            content: prompt,
-            role: "user",
-            userId: "user",
-          },
-        },
-      }
-    });
+    if (!prompt || prompt.trim() === "") {
+      return new NextResponse("Prompt is required", { status: 400 });
+    }
 
-    if (!companion) {
+    // Get companion data from Supabase
+    const { data: companion, error: companionError } = await supabase
+      .from('companions')
+      .select('*')
+      .eq('id', params.chatId)
+      .single();
+
+    if (companionError || !companion) {
+      console.error("Companion not found:", companionError);
       return new NextResponse("Companion not found", { status: 404 });
     }
 
-    const name = companion.id;
-    const companion_file_name = name + ".txt";
+    console.log("Found companion:", companion.name);
 
-    const companionKey = {
-      companionName: name!,
-      userId: user,
-      modelName: "llama2-13b",
-    };
-    const memoryManager = await MemoryManager.getInstance();
+    // Create user message in database
+    const { error: userMessageError } = await supabase
+      .from('messages')
+      .insert({
+        content: prompt,
+        role: 'user',
+        user_id: userId,
+        companion_id: params.chatId
+      });
 
-    const records = await memoryManager.readLatestHistory(companionKey);
-    if (records.length === 0) {
-      await memoryManager.seedChatHistory(companion.seed, "\n\n", companionKey);
+    if (userMessageError) {
+      console.error("Error creating user message:", userMessageError);
     }
-    await memoryManager.writeToHistory("User: " + prompt + "\n", companionKey);
 
-    // Query Pinecone
+    // Get recent chat history from database (last 10 messages)
+    const { data: recentMessages } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('companion_id', params.chatId)
+      .order('created_at', { ascending: false })
+      .limit(10);
 
-    const recentChatHistory = await memoryManager.readLatestHistory(companionKey);
-
-    // Right now the preamble is included in the similarity search, but that
-    // shouldn't be an issue
-
-    const similarDocs = await memoryManager.vectorSearch(
-      recentChatHistory,
-      companion_file_name
-    );
-
-    let relevantHistory = "";
-    if (!!similarDocs && similarDocs.length !== 0) {
-      relevantHistory = similarDocs.map((doc) => doc.pageContent).join("\n");
+    // Build conversation context
+    let conversationHistory = "";
+    if (recentMessages && recentMessages.length > 0) {
+      // Reverse to get chronological order
+      const chronologicalMessages = recentMessages.reverse();
+      conversationHistory = chronologicalMessages
+        .map(msg => `${msg.role === 'user' ? 'Human' : companion.name}: ${msg.content}`)
+        .join('\n');
+    } else {
+      // Use seed conversation if no history
+      conversationHistory = companion.seed || "";
     }
-    const { handlers } = LangChainStream();
-    // Call Replicate for inference
-    const model = new Replicate({
-      model:
-        "a16z-infra/llama-2-13b-chat:df7690f1994d94e96ad9d568eac121aecf50684a0b0963b25a41cc40061269e5",
-      input: {
-        max_length: 2048,
-      },
-      apiKey: process.env.REPLICATE_API_TOKEN,
-      callbackManager: CallbackManager.fromHandlers(handlers),
+
+    // Create the prompt for Ollama
+    const ollamaPrompt = `${companion.instructions}
+
+Previous conversation:
+${conversationHistory}
+
+Human: ${prompt}
+${companion.name}:`;
+
+    console.log("Sending prompt to Ollama:", ollamaPrompt);
+
+    // Call Ollama for inference
+    const response = await ollama.generate({
+      model: process.env.OLLAMA_MODEL || 'llama2',
+      prompt: ollamaPrompt,
+      stream: false,
+      options: {
+        temperature: 0.7,
+        top_p: 0.9,
+        max_tokens: 1000,
+      }
     });
 
-    // Turn verbose on for debugging
-    model.verbose = true;
+    const cleanedResponse = response.response.trim();
+    console.log("Ollama response:", cleanedResponse);
 
-    const resp = String(
-      await model
-        .call(
-          `
-        ONLY generate plain sentences without prefix of who is speaking. DO NOT use ${companion.name}: prefix. 
+    if (cleanedResponse && cleanedResponse.length > 1) {
+      // Save the response to the database
+      const { error: assistantMessageError } = await supabase
+        .from('messages')
+        .insert({
+          content: cleanedResponse,
+          role: 'system',
+          user_id: userId,
+          companion_id: params.chatId
+        });
 
-        ${companion.instructions}
-
-        Below are relevant details about ${companion.name}'s past and the conversation you are in.
-        ${relevantHistory}
-
-
-        ${recentChatHistory}\n${companion.name}:`
-        )
-        .catch(console.error)
-    );
-
-    const cleaned = resp.replaceAll(",", "");
-    const chunks = cleaned.split("\n");
-    const response = chunks[0];
-
-    await memoryManager.writeToHistory("" + response.trim(), companionKey);
-    var Readable = require("stream").Readable;
-
-    let s = new Readable();
-    s.push(response);
-    s.push(null);
-    if (response !== undefined && response.length > 1) {
-      memoryManager.writeToHistory("" + response.trim(), companionKey);
-
-      await prismadb.companion.update({
-        where: {
-          id: params.chatId
-        },
-        data: {
-          messages: {
-            create: {
-              content: response.trim(),
-              role: "system",
-              userId: user,
-            },
-          },
-        }
-      });
+      if (assistantMessageError) {
+        console.error("Error creating assistant message:", assistantMessageError);
+      }
     }
 
-    return new StreamingTextResponse(s);
+    return new NextResponse(cleanedResponse, {
+      headers: {
+        'Content-Type': 'text/plain',
+      },
+    });
   } catch (error) {
+    console.error("Error in chat handler:", error);
     return new NextResponse("Internal Error", { status: 500 });
   }
-};
+}

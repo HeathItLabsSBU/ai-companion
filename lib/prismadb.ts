@@ -1,4 +1,3 @@
-// Replace the entire file content with Supabase
 import { supabase } from './supabase-client'
 
 // Create a compatibility layer to minimize code changes
@@ -7,8 +6,7 @@ export const prismadb = {
     async findMany(options: any = {}) {
       let query = supabase.from('companions').select(`
         *,
-        category:categories(*),
-        _count:messages(count)
+        categories!inner(*)
       `)
       
       if (options.where?.categoryId) {
@@ -21,29 +19,49 @@ export const prismadb = {
       
       if (options.orderBy?.createdAt) {
         query = query.order('created_at', { ascending: options.orderBy.createdAt === 'asc' })
+      } else {
+        query = query.order('created_at', { ascending: false })
       }
       
       const { data, error } = await query
-      if (error) throw error
       
-      // Transform to match Prisma format
-      return data?.map(companion => ({
-        ...companion,
-        categoryId: companion.category_id,
-        userId: companion.user_id,
-        userName: companion.user_name,
-        createdAt: companion.created_at,
-        updatedAt: companion.updated_at,
-        _count: { messages: companion._count || 0 }
-      })) || []
+      if (error) {
+        console.error("Supabase findMany error:", error)
+        throw error
+      }
+      
+      console.log("Raw Supabase data:", data) // Debug log
+      
+      // Get message counts separately
+      const companionsWithCounts = await Promise.all(
+        (data || []).map(async (companion) => {
+          const { count } = await supabase
+            .from('messages')
+            .select('*', { count: 'exact', head: true })
+            .eq('companion_id', companion.id)
+          
+          return {
+            ...companion,
+            categoryId: companion.category_id,
+            userId: companion.user_id,
+            userName: companion.user_name,
+            createdAt: companion.created_at,
+            updatedAt: companion.updated_at,
+            category: companion.categories,
+            _count: { messages: count || 0 }
+          }
+        })
+      )
+      
+      console.log("Transformed companions:", companionsWithCounts) // Debug log
+      return companionsWithCounts
     },
 
     async findUnique(options: any) {
       let query = supabase.from('companions').select(`
         *,
-        category:categories(*),
-        messages(*),
-        _count:messages(count)
+        categories(*),
+        messages(*)
       `)
       
       if (options.where.id) {
@@ -55,7 +73,10 @@ export const prismadb = {
       }
       
       const { data, error } = await query.single()
-      if (error && error.code !== 'PGRST116') throw error
+      if (error && error.code !== 'PGRST116') {
+        console.error("Supabase findUnique error:", error)
+        throw error
+      }
       
       if (!data) return null
       
@@ -67,6 +88,7 @@ export const prismadb = {
         userName: data.user_name,
         createdAt: data.created_at,
         updatedAt: data.updated_at,
+        category: data.categories,
         messages: data.messages?.map((msg: any) => ({
           ...msg,
           companionId: msg.companion_id,
@@ -74,11 +96,13 @@ export const prismadb = {
           createdAt: msg.created_at,
           updatedAt: msg.updated_at
         })) || [],
-        _count: { messages: data._count || 0 }
+        _count: { messages: data.messages?.length || 0 }
       }
     },
 
     async create(options: any) {
+      console.log("Creating companion with data:", options.data) // Debug log
+      
       const { data, error } = await supabase
         .from('companions')
         .insert({
@@ -94,7 +118,12 @@ export const prismadb = {
         .select()
         .single()
       
-      if (error) throw error
+      if (error) {
+        console.error("Supabase create error:", error)
+        throw error
+      }
+      
+      console.log("Created companion:", data) // Debug log
       
       return {
         ...data,
@@ -182,7 +211,10 @@ export const prismadb = {
         .select('*')
         .order('name')
       
-      if (error) throw error
+      if (error) {
+        console.error("Supabase categories error:", error)
+        throw error
+      }
       
       return data?.map(cat => ({
         ...cat,

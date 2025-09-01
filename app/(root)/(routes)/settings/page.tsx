@@ -2,7 +2,14 @@ import { SubscriptionButton } from "@/components/subscription-button";
 import { checkSubscription } from "@/lib/subscription";
 
 const SettingsPage = async () => {
-  const isPro = await checkSubscription();
+  let isPro = false;
+  
+  try {
+    isPro = await checkSubscription();
+  } catch (error) {
+    console.error("Error checking subscription:", error);
+    isPro = false; // Default to free plan on error
+  }
 
   return ( 
     <div className="h-full p-4 space-y-2">
